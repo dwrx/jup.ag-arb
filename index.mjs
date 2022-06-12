@@ -16,12 +16,11 @@ import {
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
 
-console.log({ dotenv });
 dotenv.config();
 
 // This is a free Solana RPC endpoint. It may have ratelimit and sometimes
 // invalid cache. I will recommend using a paid RPC endpoint.
-const connection = new Connection("https://solana-api.projectserum.com");
+const connection = new Connection("https://solana-api.projectserum.com", {commitment: 'recent'});
 const wallet = new Wallet(
   Keypair.fromSecretKey(bs58.decode(process.env.PRIVATE_KEY || ""))
 );
@@ -41,8 +40,10 @@ const createWSolAccount = async () => {
   const wsolAccount = await connection.getAccountInfo(wsolAddress);
 
   if (!wsolAccount) {
+    const latestBlockHash = await connection.getLatestBlockhash();
     const transaction = new Transaction({
       feePayer: wallet.publicKey,
+      blockhash: latestBlockHash,
     });
     const instructions = [];
 
@@ -67,14 +68,11 @@ const createWSolAccount = async () => {
     );
 
     instructions.push(
-      // This is not exposed by the types, but indeed it exists
       Token.createSyncNativeInstruction(TOKEN_PROGRAM_ID, wsolAddress)
     );
 
     transaction.add(...instructions);
-    transaction.recentBlockhash = await (
-      await connection.getRecentBlockhash()
-    ).blockhash;
+    transaction.recentBlockhash = latestBlockHash.blockhash;
     transaction.partialSign(wallet.payer);
     const result = await connection.sendTransaction(transaction, [
       wallet.payer,
@@ -99,7 +97,8 @@ const getTransaction = (route) => {
         route: route,
         userPublicKey: wallet.publicKey.toString(),
         // to make sure it doesnt close the sol account
-        wrapUnwrapSOL: false,
+        // wrapUnwrapSOL: false,
+        wrapUnwrapSOL: true,
       },
     })
     .json();
@@ -136,11 +135,10 @@ const getConfirmTransaction = async (txid) => {
 // require wsol to start trading, this function create your wsol account and fund 1 SOL to it
 await createWSolAccount();
 
-// initial 20 USDC for quote
+// initial 20 Tokens for quote
 const initial = 20_000_000;
 
 while (true) {
-  // 0.1 SOL
   const usdcToSol = await getCoinQuote(USDC_MINT, SOL_MINT, initial);
 
   const solToUsdc = await getCoinQuote(
@@ -148,9 +146,17 @@ while (true) {
     USDC_MINT,
     usdcToSol.data[0].outAmount
   );
-
+  
+  const diff = (solToUsdc.data[0].outAmount - initial) / 1e6;
   // when outAmount more than initial
-  if (solToUsdc.data[0].outAmount > initial) {
+  if (solToUsdc.data[0].outAmount > initial && diff > 0.04) {
+    console.log("=========== START SWAP ===========");
+
+    // log estimated profit
+    console.log(
+      `Estimated profit: ${diff} USDC`
+    );
+    
     await Promise.all(
       [usdcToSol.data[0], solToUsdc.data[0]].map(async (route) => {
         const { setupTransaction, swapTransaction, cleanupTransaction } =
@@ -183,5 +189,6 @@ while (true) {
         );
       })
     );
+    console.log("=========== END ===========\n");
   }
 }
